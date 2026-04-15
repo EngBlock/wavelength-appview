@@ -461,15 +461,48 @@ func handleGetAuthorFeed(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+func isValidPostURI(s string) bool {
+	if !strings.HasPrefix(s, "at://") {
+		return false
+	}
+	parts := strings.SplitN(s[5:], "/", 3)
+	if len(parts) != 3 {
+		return false
+	}
+	if parts[1] != "at.yaps.audio.post" {
+		return false
+	}
+	return parts[0] != "" && parts[2] != ""
+}
+
+type threadViewPost struct {
+	Post    PostViewResponse `json:"post"`
+	Replies []threadViewPost `json:"replies"`
+}
+
+type notFoundPost struct {
+	URI      string `json:"uri"`
+	NotFound bool   `json:"notFound"`
+}
+
 func handleGetPostThread(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uri := r.URL.Query().Get("uri")
-		if uri == "" {
-			http.Error(w, `{"error":"InvalidRequest","message":"uri is required"}`, 400)
+		if !isValidPostURI(uri) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error":   "InvalidRequest",
+				"message": "uri must be a valid at.yaps.audio.post AT-URI",
+			})
 			return
 		}
 
-		// Fetch the post
+		// TODO: when threading ships, use depth to control recursive reply loading
+		depthStr := r.URL.Query().Get("depth")
+		_ = depthStr // v1: all depths behave as depth=0 (root post only, no replies)
+
 		var p PostViewResponse
 		var waveformJSON sql.NullString
 		var replyRoot, replyParent sql.NullString
@@ -485,61 +518,44 @@ func handleGetPostThread(db *sql.DB) http.HandlerFunc {
 			&p.LikeCount, &p.ReplyCount)
 
 		if err == sql.ErrNoRows {
-			http.Error(w, `{"error":"NotFound","message":"post not found"}`, 404)
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Cache-Control", "public, max-age=10")
+			json.NewEncoder(w).Encode(map[string]any{
+				"thread": notFoundPost{URI: uri, NotFound: true},
+			})
 			return
 		}
 		if err != nil {
-			http.Error(w, err.Error(), 500)
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error":   "InternalServerError",
+				"message": "internal server error",
+			})
 			return
 		}
 
 		if waveformJSON.Valid {
 			json.Unmarshal([]byte(waveformJSON.String), &p.Waveform)
 		}
-		if replyRoot.Valid { p.ReplyRoot = &replyRoot.String }
-		if replyParent.Valid { p.ReplyParent = &replyParent.String }
-
-		// Fetch direct replies
-		replyRows, err := db.Query(`
-			SELECT p.uri, p.cid, p.author_did, p.blob_cid, p.mime_type, p.duration,
-				p.waveform, p.reply_root, p.reply_parent, p.created_at,
-				(SELECT COUNT(*) FROM likes l WHERE l.subject_uri = p.uri) as like_count,
-				(SELECT COUNT(*) FROM posts r WHERE r.reply_parent = p.uri) as reply_count
-			FROM posts p WHERE p.reply_parent = ?
-			ORDER BY p.created_at ASC
-		`, uri)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
+		if replyRoot.Valid {
+			p.ReplyRoot = &replyRoot.String
 		}
-		defer replyRows.Close()
-
-		replies := []PostViewResponse{}
-		for replyRows.Next() {
-			var rp PostViewResponse
-			var rwf sql.NullString
-			var rr, rrp sql.NullString
-
-			if err := replyRows.Scan(&rp.URI, &rp.CID, &rp.AuthorDID, &rp.BlobCID, &rp.MimeType,
-				&rp.Duration, &rwf, &rr, &rrp, &rp.CreatedAt, &rp.LikeCount, &rp.ReplyCount); err != nil {
-				continue
-			}
-			if rwf.Valid { json.Unmarshal([]byte(rwf.String), &rp.Waveform) }
-			if rr.Valid { rp.ReplyRoot = &rr.String }
-			if rrp.Valid { rp.ReplyParent = &rrp.String }
-			replies = append(replies, rp)
-		}
-
-		resp := map[string]any{
-			"thread": map[string]any{
-				"post":    p,
-				"replies": replies,
-			},
+		if replyParent.Valid {
+			p.ReplyParent = &replyParent.String
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		json.NewEncoder(w).Encode(resp)
+		w.Header().Set("Cache-Control", "public, max-age=10")
+		json.NewEncoder(w).Encode(map[string]any{
+			"thread": threadViewPost{
+				Post:    p,
+				Replies: []threadViewPost{},
+			},
+		})
 	}
 }
 
