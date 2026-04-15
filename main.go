@@ -296,6 +296,11 @@ func handleLike(db *sql.DB, log *slog.Logger, evt *JetstreamEvent) {
 // XRPC query endpoints
 // ---------------------------------------------------------------------------
 
+func setJSONHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+}
+
 type PostViewResponse struct {
 	URI        string  `json:"uri"`
 	CID        string  `json:"cid"`
@@ -373,8 +378,7 @@ func handleGetFeed(db *sql.DB) http.HandlerFunc {
 			resp["cursor"] = lastCreatedAt
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		setJSONHeaders(w)
 		json.NewEncoder(w).Encode(resp)
 	}
 }
@@ -455,8 +459,7 @@ func handleGetAuthorFeed(db *sql.DB) http.HandlerFunc {
 			resp["cursor"] = lastCreatedAt
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		setJSONHeaders(w)
 		json.NewEncoder(w).Encode(resp)
 	}
 }
@@ -489,8 +492,7 @@ func handleGetPostThread(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uri := r.URL.Query().Get("uri")
 		if !isValidPostURI(uri) {
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Access-Control-Allow-Origin", "*")
+			setJSONHeaders(w)
 			w.WriteHeader(400)
 			json.NewEncoder(w).Encode(map[string]string{
 				"error":   "InvalidRequest",
@@ -518,8 +520,7 @@ func handleGetPostThread(db *sql.DB) http.HandlerFunc {
 			&p.LikeCount, &p.ReplyCount)
 
 		if err == sql.ErrNoRows {
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Access-Control-Allow-Origin", "*")
+			setJSONHeaders(w)
 			w.Header().Set("Cache-Control", "public, max-age=10")
 			json.NewEncoder(w).Encode(map[string]any{
 				"thread": notFoundPost{URI: uri, NotFound: true},
@@ -527,8 +528,7 @@ func handleGetPostThread(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Access-Control-Allow-Origin", "*")
+			setJSONHeaders(w)
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{
 				"error":   "InternalServerError",
@@ -547,8 +547,7 @@ func handleGetPostThread(db *sql.DB) http.HandlerFunc {
 			p.ReplyParent = &replyParent.String
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		setJSONHeaders(w)
 		w.Header().Set("Cache-Control", "public, max-age=10")
 		json.NewEncoder(w).Encode(map[string]any{
 			"thread": threadViewPost{
