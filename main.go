@@ -125,6 +125,9 @@ func initDB(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("creating tables: %w", err)
 	}
 
+	db.Exec("ALTER TABLE posts ADD COLUMN reply_root_cid TEXT")
+	db.Exec("ALTER TABLE posts ADD COLUMN reply_parent_cid TEXT")
+
 	return db, nil
 }
 
@@ -238,25 +241,29 @@ func handlePost(db *sql.DB, log *slog.Logger, evt *JetstreamEvent) {
 
 		waveformJSON, _ := json.Marshal(rec.Waveform)
 
-		var replyRoot, replyParent *string
+		var replyRoot, replyRootCID, replyParent, replyParentCID *string
 		if rec.Reply != nil {
 			replyRoot = &rec.Reply.Root.URI
+			replyRootCID = &rec.Reply.Root.CID
 			replyParent = &rec.Reply.Parent.URI
+			replyParentCID = &rec.Reply.Parent.CID
 		}
 
 		_, err := db.Exec(`
-			INSERT INTO posts (uri, cid, author_did, blob_cid, mime_type, duration, waveform, reply_root, reply_parent, created_at, indexed_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO posts (uri, cid, author_did, blob_cid, mime_type, duration, waveform, reply_root, reply_root_cid, reply_parent, reply_parent_cid, created_at, indexed_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(uri) DO UPDATE SET
 				cid = excluded.cid,
 				blob_cid = excluded.blob_cid,
 				duration = excluded.duration,
 				waveform = excluded.waveform,
 				reply_root = excluded.reply_root,
+				reply_root_cid = excluded.reply_root_cid,
 				reply_parent = excluded.reply_parent,
+				reply_parent_cid = excluded.reply_parent_cid,
 				indexed_at = excluded.indexed_at
 		`, uri, c.CID, evt.Did, rec.Audio.Ref.Link, rec.Audio.MimeType, rec.Duration,
-			string(waveformJSON), replyRoot, replyParent, rec.CreatedAt, time.Now().UTC().Format(time.RFC3339))
+			string(waveformJSON), replyRoot, replyRootCID, replyParent, replyParentCID, rec.CreatedAt, time.Now().UTC().Format(time.RFC3339))
 		if err != nil {
 			log.Error("insert post", "uri", uri, "err", err)
 		}
@@ -302,18 +309,20 @@ func setJSONHeaders(w http.ResponseWriter) {
 }
 
 type PostViewResponse struct {
-	URI        string  `json:"uri"`
-	CID        string  `json:"cid"`
-	AuthorDID  string  `json:"author_did"`
-	BlobCID    string  `json:"blob_cid"`
-	MimeType   string  `json:"mime_type"`
-	Duration   int     `json:"duration"`
-	Waveform   []int   `json:"waveform,omitempty"`
-	ReplyRoot  *string `json:"reply_root,omitempty"`
-	ReplyParent *string `json:"reply_parent,omitempty"`
-	CreatedAt  string  `json:"created_at"`
-	LikeCount  int     `json:"like_count"`
-	ReplyCount int     `json:"reply_count"`
+	URI            string  `json:"uri"`
+	CID            string  `json:"cid"`
+	AuthorDID      string  `json:"author_did"`
+	BlobCID        string  `json:"blob_cid"`
+	MimeType       string  `json:"mime_type"`
+	Duration       int     `json:"duration"`
+	Waveform       []int   `json:"waveform,omitempty"`
+	ReplyRoot      *string `json:"reply_root,omitempty"`
+	ReplyRootCID   *string `json:"reply_root_cid,omitempty"`
+	ReplyParent    *string `json:"reply_parent,omitempty"`
+	ReplyParentCID *string `json:"reply_parent_cid,omitempty"`
+	CreatedAt      string  `json:"created_at"`
+	LikeCount      int     `json:"like_count"`
+	ReplyCount     int     `json:"reply_count"`
 }
 
 func handleGetFeed(db *sql.DB) http.HandlerFunc {
@@ -328,7 +337,7 @@ func handleGetFeed(db *sql.DB) http.HandlerFunc {
 
 		query := `
 			SELECT p.uri, p.cid, p.author_did, p.blob_cid, p.mime_type, p.duration,
-				p.waveform, p.reply_root, p.reply_parent, p.created_at,
+				p.waveform, p.reply_root, p.reply_root_cid, p.reply_parent, p.reply_parent_cid, p.created_at,
 				(SELECT COUNT(*) FROM likes l WHERE l.subject_uri = p.uri) as like_count,
 				(SELECT COUNT(*) FROM posts r WHERE r.reply_parent = p.uri) as reply_count
 			FROM posts p
@@ -354,10 +363,10 @@ func handleGetFeed(db *sql.DB) http.HandlerFunc {
 		for rows.Next() {
 			var p PostViewResponse
 			var waveformJSON sql.NullString
-			var replyRoot, replyParent sql.NullString
+			var replyRoot, replyRootCID, replyParent, replyParentCID sql.NullString
 
 			err := rows.Scan(&p.URI, &p.CID, &p.AuthorDID, &p.BlobCID, &p.MimeType,
-				&p.Duration, &waveformJSON, &replyRoot, &replyParent, &p.CreatedAt,
+				&p.Duration, &waveformJSON, &replyRoot, &replyRootCID, &replyParent, &replyParentCID, &p.CreatedAt,
 				&p.LikeCount, &p.ReplyCount)
 			if err != nil {
 				continue
@@ -367,7 +376,9 @@ func handleGetFeed(db *sql.DB) http.HandlerFunc {
 				json.Unmarshal([]byte(waveformJSON.String), &p.Waveform)
 			}
 			if replyRoot.Valid { p.ReplyRoot = &replyRoot.String }
+			if replyRootCID.Valid { p.ReplyRootCID = &replyRootCID.String }
 			if replyParent.Valid { p.ReplyParent = &replyParent.String }
+			if replyParentCID.Valid { p.ReplyParentCID = &replyParentCID.String }
 
 			lastCreatedAt = p.CreatedAt
 			posts = append(posts, p)
@@ -409,7 +420,7 @@ func handleGetAuthorFeed(db *sql.DB) http.HandlerFunc {
 
 		query := `
 			SELECT p.uri, p.cid, p.author_did, p.blob_cid, p.mime_type, p.duration,
-				p.waveform, p.reply_root, p.reply_parent, p.created_at,
+				p.waveform, p.reply_root, p.reply_root_cid, p.reply_parent, p.reply_parent_cid, p.created_at,
 				(SELECT COUNT(*) FROM likes l WHERE l.subject_uri = p.uri) as like_count,
 				(SELECT COUNT(*) FROM posts r WHERE r.reply_parent = p.uri) as reply_count
 			FROM posts p
@@ -435,10 +446,10 @@ func handleGetAuthorFeed(db *sql.DB) http.HandlerFunc {
 		for rows.Next() {
 			var p PostViewResponse
 			var waveformJSON sql.NullString
-			var replyRoot, replyParent sql.NullString
+			var replyRoot, replyRootCID, replyParent, replyParentCID sql.NullString
 
 			err := rows.Scan(&p.URI, &p.CID, &p.AuthorDID, &p.BlobCID, &p.MimeType,
-				&p.Duration, &waveformJSON, &replyRoot, &replyParent, &p.CreatedAt,
+				&p.Duration, &waveformJSON, &replyRoot, &replyRootCID, &replyParent, &replyParentCID, &p.CreatedAt,
 				&p.LikeCount, &p.ReplyCount)
 			if err != nil {
 				continue
@@ -448,7 +459,9 @@ func handleGetAuthorFeed(db *sql.DB) http.HandlerFunc {
 				json.Unmarshal([]byte(waveformJSON.String), &p.Waveform)
 			}
 			if replyRoot.Valid { p.ReplyRoot = &replyRoot.String }
+			if replyRootCID.Valid { p.ReplyRootCID = &replyRootCID.String }
 			if replyParent.Valid { p.ReplyParent = &replyParent.String }
+			if replyParentCID.Valid { p.ReplyParentCID = &replyParentCID.String }
 
 			lastCreatedAt = p.CreatedAt
 			posts = append(posts, p)
@@ -507,16 +520,16 @@ func handleGetPostThread(db *sql.DB) http.HandlerFunc {
 
 		var p PostViewResponse
 		var waveformJSON sql.NullString
-		var replyRoot, replyParent sql.NullString
+		var replyRoot, replyRootCID, replyParent, replyParentCID sql.NullString
 
 		err := db.QueryRow(`
 			SELECT p.uri, p.cid, p.author_did, p.blob_cid, p.mime_type, p.duration,
-				p.waveform, p.reply_root, p.reply_parent, p.created_at,
+				p.waveform, p.reply_root, p.reply_root_cid, p.reply_parent, p.reply_parent_cid, p.created_at,
 				(SELECT COUNT(*) FROM likes l WHERE l.subject_uri = p.uri) as like_count,
 				(SELECT COUNT(*) FROM posts r WHERE r.reply_parent = p.uri) as reply_count
 			FROM posts p WHERE p.uri = ?
 		`, uri).Scan(&p.URI, &p.CID, &p.AuthorDID, &p.BlobCID, &p.MimeType,
-			&p.Duration, &waveformJSON, &replyRoot, &replyParent, &p.CreatedAt,
+			&p.Duration, &waveformJSON, &replyRoot, &replyRootCID, &replyParent, &replyParentCID, &p.CreatedAt,
 			&p.LikeCount, &p.ReplyCount)
 
 		if err == sql.ErrNoRows {
@@ -543,8 +556,14 @@ func handleGetPostThread(db *sql.DB) http.HandlerFunc {
 		if replyRoot.Valid {
 			p.ReplyRoot = &replyRoot.String
 		}
+		if replyRootCID.Valid {
+			p.ReplyRootCID = &replyRootCID.String
+		}
 		if replyParent.Valid {
 			p.ReplyParent = &replyParent.String
+		}
+		if replyParentCID.Valid {
+			p.ReplyParentCID = &replyParentCID.String
 		}
 
 		setJSONHeaders(w)
