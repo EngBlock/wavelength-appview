@@ -139,8 +139,8 @@ func buildJetstreamURL(cursor int64) string {
 		Path:   "/subscribe",
 	}
 	q := u.Query()
-	q.Set("wantedCollections", "at.wavelength.audio.post")
-	q.Add("wantedCollections", "at.wavelength.audio.like")
+	q.Set("wantedCollections", "at.yaps.audio.post")
+	q.Add("wantedCollections", "at.yaps.audio.like")
 	if cursor > 0 {
 		q.Set("cursor", fmt.Sprintf("%d", cursor))
 	}
@@ -214,9 +214,9 @@ func readLoop(ctx context.Context, conn *websocket.Conn, db *sql.DB, log *slog.L
 		}
 
 		switch evt.Commit.Collection {
-		case "at.wavelength.audio.post":
+		case "at.yaps.audio.post":
 			handlePost(db, log, &evt)
-		case "at.wavelength.audio.like":
+		case "at.yaps.audio.like":
 			handleLike(db, log, &evt)
 		}
 
@@ -575,9 +575,9 @@ func main() {
 
 	// XRPC endpoints
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /xrpc/at.wavelength.audio.getFeed", handleGetFeed(db))
-	mux.HandleFunc("GET /xrpc/at.wavelength.audio.getAuthorFeed", handleGetAuthorFeed(db))
-	mux.HandleFunc("GET /xrpc/at.wavelength.audio.getPostThread", handleGetPostThread(db))
+	mux.HandleFunc("GET /xrpc/at.yaps.audio.getFeed", handleGetFeed(db))
+	mux.HandleFunc("GET /xrpc/at.yaps.audio.getAuthorFeed", handleGetAuthorFeed(db))
+	mux.HandleFunc("GET /xrpc/at.yaps.audio.getPostThread", handleGetPostThread(db))
 
 	// Health check
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
